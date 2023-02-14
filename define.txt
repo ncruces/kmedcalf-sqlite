@@ -1,0 +1,55 @@
+// SCLRSLOT = -(unicode('S')*16777216 + unicode('C')*65536 + unicode('L')*256 + unicode('R'))
+#define SCLRSLOT -1396919378
+
+create table scalar_functions
+(
+    id      integer primary key,
+    name    text not null collate nocase unique,
+    body    text not null
+);
+
+
+UDF define(name, body):
+    insert into scalar_functions values (null, :name, :body);
+    select id into :id from scalar_functions where name == :name
+    create_scalar_function(name, id)
+
+UDF undefine(name):
+    delete from scalar_functions where name == :name;
+    delete_scalar_function(name)
+
+UDF scalar_function(...)
+    id = (int)sqlite3_user_context()
+    slot = SCLRSLOT - id
+    stmt = sqlite3_get_auxdata(context, slot)
+    if (!stmt) {
+        select name, body into :name, :body from scalar_functions where id == :id
+        sqlite3_prepare(db, body, &stmt)
+        if rc != SQLITE_OK
+            toss cookies
+        sqlite3_set_auxdata(slot, stmt, sqlite3_finalize)
+        stmt = sqlite3_get_auxdata(slot)
+        if (!stmt)
+            toss cookies out of memory
+    }
+    nargs = sqlite3_bind_parameter_count(stmt)
+    if (nargs <> argc)
+        toss cookies wrong number of arguments
+    for(int i=0; i<argc; i++)
+        sqlite3_bind_value(i+1, argv[i])
+    sqlite3_step(stmt)
+    sqlite3_result_value(sqlite3_column_value(1))
+    sqlite3_reset(stmt)
+
+static create_scalar_function(name, id)
+    sqlite3_create_function_v2(db, name, -1, SQLITE_UTF8|SQLITE_DETERMINISTIC|SQLITE_INNOCUOUS, (intptr_t)id, scalar_function, 0, 0)
+
+static delete_scalar_function(name, id)
+    sqlite3_create_function_v2(db, name, -1, SQLITE_UTF8|SQLITE_DETERMINISTIC|SQLITE_INNOCUOUS, (intptr_t)id, 0, 0, 0)
+
+init_function
+    create_function(define)
+    create_function(undefine)
+    select id, name into :id, :name from scalar_functions
+        create_scalar_function(name, id)
+
