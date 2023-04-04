@@ -1,0 +1,24 @@
+Index: src/where.c
+==================================================================
+--- src/where.c
++++ src/where.c
+@@ -4609,11 +4609,17 @@
+   db = pParse->db;
+   nLoop = pWInfo->nLevel;
+   /* TUNING: For simple queries, only the best path is tracked.
+   ** For 2-way joins, the 5 best paths are followed.
+   ** For joins of 3 or more tables, track the 10 best paths */
+-  mxChoice = (nLoop<=1) ? 1 : (nLoop==2 ? 5 : 10);
++#ifndef WHERE_PATH_SIMPLE
++#define WHERE_PATH_SIMPLE 5
++#endif
++#ifndef WHERE_PATH_COMPLEX
++#define WHERE_PATH_COMPLEX 10
++#endif
++  mxChoice = (nLoop<=1) ? 1 : (nLoop==2 ? WHERE_PATH_SIMPLE : WHERE_PATH_COMPLEX);
+   assert( nLoop<=pWInfo->pTabList->nSrc );
+   WHERETRACE(0x002, ("---- begin solver.  (nRowEst=%d)\n", nRowEst));
+ 
+   /* If nRowEst is zero and there is an ORDER BY clause, ignore it. In this
+   ** case the purpose of this call is to estimate the number of rows returned
+

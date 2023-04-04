@@ -1,0 +1,21 @@
+Index: src/os_win.c
+==================================================================
+--- src/os_win.c
++++ src/os_win.c
+@@ -753,11 +753,15 @@
+   { "GetSystemTime",           (SYSCALL)GetSystemTime,           0 },
+
+ #define osGetSystemTime ((VOID(WINAPI*)(LPSYSTEMTIME))aSyscall[29].pCurrent)
+
+ #if !SQLITE_OS_WINCE
++#ifdef SQLITE_USE_PRECISE_TIME
++  { "GetSystemTimeAsFileTime", (SYSCALL)GetSystemTimePreciseAsFileTime, 0 },
++#else
+   { "GetSystemTimeAsFileTime", (SYSCALL)GetSystemTimeAsFileTime, 0 },
++#endif
+ #else
+   { "GetSystemTimeAsFileTime", (SYSCALL)0,                       0 },
+ #endif
+
+ #define osGetSystemTimeAsFileTime ((VOID(WINAPI*)( \
+

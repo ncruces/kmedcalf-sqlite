@@ -1,0 +1,234 @@
+Index: src/date.c
+==================================================================
+--- src/date.c
++++ src/date.c
+@@ -361,16 +361,20 @@
+   p->validYMD = 1;
+   return 0;
+ }
+ 
+ /*
+-** Set the time to the current time reported by the VFS.
++** Set the time to the current time reported for the prepared statement
++** that is currently executing.  The same time is reported for all
++** invocations of this routine from within the same call to sqlite3_step().
++**
++** Or if bTxn is true, use the transaction time.
+ **
+ ** Return the number of errors.
+ */
+-static int setDateTimeToCurrent(sqlite3_context *context, DateTime *p){
+-  p->iJD = sqlite3StmtCurrentTime(context);
++static int setCurrentStmtTime(sqlite3_context *context, DateTime *p, int bTxn){
++  p->iJD = sqlite3StmtCurrentTime(context, bTxn);
+   if( p->iJD>0 ){
+     p->validJD = 1;
+     p->validYMD = 0;
+     p->validHMS = 0;
+     p->validTZ = 1;
+@@ -438,17 +442,19 @@
+   }else if( parseHhMmSs(zDate, p)==0 ){
+     return 0;
+   }else if( !context ){
+     return 1;   /* bail if no context */
+   }else if( sqlite3StrICmp(zDate,"now")==0 && sqlite3NotPureFunc(context) ){
+-    return setDateTimeToCurrent(context, p);
++    return setCurrentStmtTime(context, p, 0);
++  }else if( sqlite3StrICmp(zDate,"txn")==0 && sqlite3NotPureFunc(context) ){
++    return setCurrentStmtTime(context, p, 1);
+ #ifndef SQLITE_OMIT_LOCALTIME
+   }else if( sqlite3StrICmp(zDate, "local")==0 && sqlite3NotPureFunc(context) ){
+-    if(setDateTimeToCurrent(context, p)==0) return toLocaltime(p, context);
++    if(setCurrentStmtTime(context, p, 0)==0) return toLocaltime(p, context);
+ #endif
+   }else if( strchr(zDate, '/')>0 ) {
+-    if( setDateTimeToCurrent(context, p)==0 )
++    if( setCurrentStmtTime(context, p, 0)==0 )
+         if (*zDate == '-') return 0;
+         else return _applyZone(context, zDate, p);
+   }else if( sqlite3AtoF(zDate, &r, sqlite3Strlen30(zDate), SQLITE_UTF8)>0 ){
+     setRawDateNumber(p, r);
+     return 0;
+@@ -1526,12 +1532,15 @@
+ ** Process time function arguments.  argv[0] is a date-time stamp.
+ ** argv[1] and following are modifiers.  Parse them all and write
+ ** the resulting time into the DateTime structure p.  Return 0
+ ** on success and 1 if there are any errors.
+ **
+-** If there are zero parameters (if even argv[0] is undefined)
+-** then assume a default value of "now" for argv[0].
++** If there are zero parameters (if argc<=0) then assume a default
++** value of "now" for argv[0] if argc==0 and "txn" if argc<0.  SQL
++** functions will always have argc>=0, but the special implementations
++** of CURRENT_TIME, CURRENT_DATE, and CURRENT_TIMESTAMP set argc to -1
++** in order to force the use of 'txn' semantics.
+ */
+ static int isDate(
+   sqlite3_context *context,
+   int argc,
+   sqlite3_value **argv,
+@@ -1539,13 +1548,13 @@
+ ){
+   int i, n;
+   const unsigned char *z;
+   int eType;
+   memset(p, 0, sizeof(*p));
+-  if( argc==0 ){
++  if( argc<=0 ){
+     if( !sqlite3NotPureFunc(context) ) return 1;
+-    return setDateTimeToCurrent(context, p);
++    return setCurrentStmtTime(context, p, argc<0);
+   }
+   if( (eType = sqlite3_value_type(argv[0]))==SQLITE_FLOAT
+                    || eType==SQLITE_INTEGER ){
+     setRawDateNumber(p, sqlite3_value_double(argv[0]));
+   }else{
+@@ -2002,11 +2011,11 @@
+   sqlite3_context *context,
+   int NotUsed,
+   sqlite3_value **NotUsed2
+ ){
+   UNUSED_PARAMETER2(NotUsed, NotUsed2);
+-  timeFunc(context, 0, 0);
++  timeFunc(context, -1, 0);
+ }
+ 
+ /*
+ ** current_date()
+ **
+@@ -2016,11 +2025,11 @@
+   sqlite3_context *context,
+   int NotUsed,
+   sqlite3_value **NotUsed2
+ ){
+   UNUSED_PARAMETER2(NotUsed, NotUsed2);
+-  dateFunc(context, 0, 0);
++  dateFunc(context, -1, 0);
+ }
+ 
+ /*
+ ** current_timestamp()
+ **
+@@ -2030,11 +2039,11 @@
+   sqlite3_context *context,
+   int NotUsed,
+   sqlite3_value **NotUsed2
+ ){
+   UNUSED_PARAMETER2(NotUsed, NotUsed2);
+-  datetimeFunc(context, 0, 0);
++  datetimeFunc(context, -1, 0);
+ }
+ #endif /* !defined(SQLITE_OMIT_DATETIME_FUNCS) */
+ 
+ #ifdef SQLITE_OMIT_DATETIME_FUNCS
+ /*
+@@ -2061,11 +2070,11 @@
+   char zBuf[20];
+ 
+   UNUSED_PARAMETER(argc);
+   UNUSED_PARAMETER(argv);
+ 
+-  iT = sqlite3StmtCurrentTime(context);
++  iT = sqlite3StmtCurrentTime(context, 1);
+   if( iT<=0 ) return;
+   t = iT/1000 - 10000*(sqlite3_int64)21086676;
+ #if HAVE_GMTIME_R
+   pTm = gmtime_r(&t, &sNow);
+ #else
+
+Index: src/sqliteInt.h
+==================================================================
+--- src/sqliteInt.h
++++ src/sqliteInt.h
+@@ -1635,10 +1635,11 @@
+   u8 mTrace;                    /* zero or more SQLITE_TRACE flags */
+   u8 noSharedCache;             /* True if no shared-cache backends */
+   u8 nSqlExec;                  /* Number of pending OP_SqlExec opcodes */
+   u8 eOpenState;                /* Current condition of the connection */
+   int nextPagesize;             /* Pagesize after VACUUM if >0 */
++  i64 txnTime;                  /* Timestamp for current transaction */
+   i64 nChange;                  /* Value returned by sqlite3_changes() */
+   i64 nTotalChange;             /* Value returned by sqlite3_total_changes() */
+   int aLimit[SQLITE_N_LIMIT];   /* Limits */
+   int nMaxSorterMmap;           /* Maximum size of regions mapped by sorter */
+   struct sqlite3InitInfo {      /* Information used during initialization */
+@@ -5393,11 +5394,11 @@
+ FuncDef *sqlite3VtabOverloadFunction(sqlite3 *,FuncDef*, int nArg, Expr*);
+ #if (defined(SQLITE_ENABLE_DBPAGE_VTAB) || defined(SQLITE_TEST)) \
+     && !defined(SQLITE_OMIT_VIRTUALTABLE)
+   void sqlite3VtabUsesAllSchemas(sqlite3_index_info*);
+ #endif
+-sqlite3_int64 sqlite3StmtCurrentTime(sqlite3_context*);
++sqlite3_int64 sqlite3StmtCurrentTime(sqlite3_context*, int);
+ int sqlite3VdbeParameterIndex(Vdbe*, const char*, int);
+ int sqlite3TransferBindings(sqlite3_stmt *, sqlite3_stmt *);
+ void sqlite3ParseObjectInit(Parse*,sqlite3*);
+ void sqlite3ParseObjectReset(Parse*);
+ void *sqlite3ParserAddCleanup(Parse*,void(*)(sqlite3*,void*),void*);
+
+Index: src/vdbeapi.c
+==================================================================
+--- src/vdbeapi.c
++++ src/vdbeapi.c
+@@ -968,22 +968,31 @@
+ ** Return the current time for a statement.  If the current time
+ ** is requested more than once within the same run of a single prepared
+ ** statement, the exact same time is returned for each invocation regardless
+ ** of the amount of time that elapses between invocations.  In other words,
+ ** the time returned is always the time of the first call.
++**
++** Or, if bTxn, return the transaction time.  The transaction time is the
++** same for all calls within the same transaction.
++**
++** bTxn is 0 for SQL like datetime('now') and is 1 for datetime('txn').
+ */
+-sqlite3_int64 sqlite3StmtCurrentTime(sqlite3_context *p){
++sqlite3_int64 sqlite3StmtCurrentTime(sqlite3_context *p, int bTxn){
+   int rc;
+ #ifndef SQLITE_ENABLE_STAT4
+-  sqlite3_int64 *piTime = &p->pVdbe->iCurrentTime;
++  sqlite3_int64 *piTime;
++  sqlite3 *db = p->pOut->db;
+   assert( p->pVdbe!=0 );
++  piTime = bTxn ? &db->txnTime : &p->pVdbe->iCurrentTime;
+ #else
+   sqlite3_int64 iTime = 0;
+-  sqlite3_int64 *piTime = p->pVdbe!=0 ? &p->pVdbe->iCurrentTime : &iTime;
++  sqlite3_int64 *piTime;
++  sqlite3 *db = p->pOut->db;
++  piTime = bTxn ? &db->txnTime : p->pVdbe!=0 ? &p->pVdbe->iCurrentTime : &iTime;
+ #endif
+   if( *piTime==0 ){
+-    rc = sqlite3OsCurrentTimeInt64(p->pOut->db->pVfs, piTime);
++    rc = sqlite3OsCurrentTimeInt64(db->pVfs, piTime);
+     if( rc ) *piTime = 0;
+   }
+   return *piTime;
+ }
+ 
+
+Index: src/vdbeaux.c
+==================================================================
+--- src/vdbeaux.c
++++ src/vdbeaux.c
+@@ -3394,10 +3394,19 @@
+   ** by connection db have now been released. Call sqlite3ConnectionUnlocked() 
+   ** to invoke any required unlock-notify callbacks.
+   */
+   if( db->autoCommit ){
+     sqlite3ConnectionUnlocked(db);
++    if( db->txnTime ){
++      int transaction = 0;
++      for( int ii=0; ii<db->nDb; ii++ ){
++        Btree* pBt = db->aDb[ii].pBt;
++        transaction += (pBt ? pBt->inTrans : 0);
++      }
++      if( !transaction )
++        db->txnTime = 0;
++    }
+   }
+ 
+   assert( db->nVdbeActive>0 || db->autoCommit==0 || db->nStatement==0 );
+   return (p->rc==SQLITE_BUSY ? SQLITE_BUSY : SQLITE_OK);
+ }
+

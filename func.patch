@@ -1,0 +1,19 @@
+Index: src/func.c
+==================================================================
+--- src/func.c
++++ src/func.c
+@@ -1504,12 +1504,12 @@
+ ** An instance of the following structure holds the context of a
+ ** sum() or avg() aggregate computation.
+ */
+ typedef struct SumCtx SumCtx;
+ struct SumCtx {
+-  double rSum;      /* Floating point sum */
+-  i64 iSum;         /* Integer sum */
++  LONGDOUBLE_TYPE rSum;      /* Floating point sum */
++  i64 iSum;         /* Integer sum */
+   i64 cnt;          /* Number of elements summed */
+   u8 overflow;      /* True if integer overflow seen */
+   u8 approx;        /* True if non-integer value was input to the sum */
+ };
+

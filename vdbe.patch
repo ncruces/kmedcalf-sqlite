@@ -1,0 +1,18 @@
+Index: src/vdbe.c
+==================================================================
+--- src/vdbe.c
++++ src/vdbe.c
+@@ -703,10 +703,13 @@
+   }
+   assert( p->rc==SQLITE_OK || (p->rc&0xff)==SQLITE_BUSY );
+   testcase( p->rc!=SQLITE_OK );
+   p->rc = SQLITE_OK;
+   assert( p->bIsReader || p->readOnly!=0 );
++#ifdef SQLITE_NOW_STABILITY_STMT // Only reset iCurrentDate at start of statement
++  if (p->pc == 0)
++#endif
+   p->iCurrentTime = 0;
+   assert( p->explain==0 );
+   p->pResultSet = 0;
+   db->busyHandler.nBusy = 0;
+   if( AtomicLoad(&db->u1.isInterrupted) ) goto abort_due_to_interrupt;

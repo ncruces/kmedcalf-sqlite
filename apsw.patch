@@ -1,0 +1,236 @@
+Index: src/apsw.c
+==================================================================
+--- src/apsw.c
++++ src/apsw.c
+@@ -41,11 +41,12 @@
+ /* SQLite amalgamation */
+ #ifdef APSW_USE_SQLITE_AMALGAMATION
+ /* See SQLite ticket 2554 */
+ #define SQLITE_API static
+ #define SQLITE_EXTERN static
+-#define SQLITE_ENABLE_API_ARMOR 1
++#define SQLITE_CUSTOM_INCLUDE configuration.h
++#define SQLITE_EXTRA_INIT core_init
+ #include APSW_USE_SQLITE_AMALGAMATION
+ #undef small
+
+ /* Fight with SQLite over ndebug */
+ #ifdef APSW_NO_NDEBUG
+
+Index: src/cursor.c
+==================================================================
+--- src/cursor.c
++++ src/cursor.c
+@@ -316,13 +316,14 @@
+   self->weakreflist = NULL;
+   self->description_cache[0] = 0;
+   self->description_cache[1] = 0;
+ }
+
+-static const char *description_formats[] = {
+-    "(O&O&)",
+-    "(O&O&OOOOO)"};
++static const char *description_formats[]={
++  "(O&O&)",
++  "(O&O&O&O&O&OO)"
++};
+
+ static PyObject *
+ APSWCursor_internal_getdescription(APSWCursor *self, int fmtnum)
+ {
+   int ncols, i;
+@@ -345,39 +346,46 @@
+   {
+     Py_INCREF(self->description_cache[fmtnum]);
+     return self->description_cache[fmtnum];
+   }
+
+-  ncols = sqlite3_column_count(self->statement->vdbestatement);
+-  result = PyTuple_New(ncols);
+-  if (!result)
+-    goto error;
+-
+-  for (i = 0; i < ncols; i++)
+-  {
+-    const char *colname;
+-    const char *coldesc;
+-
+-    PYSQLITE_VOID_CALL((colname = sqlite3_column_name(self->statement->vdbestatement, i), coldesc = sqlite3_column_decltype(self->statement->vdbestatement, i)));
+-    APSW_FAULT_INJECT(GetDescriptionFail,
+-                      column = Py_BuildValue(description_formats[fmtnum],
+-                                             convertutf8string, colname,
+-                                             convertutf8string, coldesc,
+-                                             Py_None,
+-                                             Py_None,
+-                                             Py_None,
+-                                             Py_None,
+-                                             Py_None),
+-                      column = PyErr_NoMemory());
+-
+-    if (!column)
+-      goto error;
+-
+-    PyTuple_SET_ITEM(result, i, column);
+-    /* owned by result now */
+-    column = 0;
+-  }
++  ncols=sqlite3_column_count(self->statement->vdbestatement);
++  result=PyTuple_New(ncols);
++  if(!result) goto error;
++
++  for(i=0;i<ncols;i++)
++    {
++      const char *colname;
++      const char *coldesc;
++      const char *coldatabase;
++      const char *coltable;
++      const char *colorigin;
++
++      PYSQLITE_VOID_CALL( (colname=sqlite3_column_name(self->statement->vdbestatement, i),
++                           coldesc=sqlite3_column_decltype(self->statement->vdbestatement, i),
++                           coldatabase=sqlite3_column_database_name(self->statement->vdbestatement, i),
++                           coltable=sqlite3_column_table_name(self->statement->vdbestatement, i),
++                           colorigin=sqlite3_column_origin_name(self->statement->vdbestatement, i)
++                          ) );
++      APSW_FAULT_INJECT(GetDescriptionFail,
++      column=Py_BuildValue(description_formats[fmtnum],
++             convertutf8string, colname,
++             convertutf8string, coldesc,
++             convertutf8string, coldatabase,
++             convertutf8string, coltable,
++             convertutf8string, colorigin,
++             Py_None,
++             Py_None),
++      column=PyErr_NoMemory()
++      );
++
++      if(!column) goto error;
++
++      PyTuple_SET_ITEM(result, i, column);
++      /* owned by result now */
++      column=0;
++    }
+
+   Py_INCREF(result);
+   self->description_cache[fmtnum] = result;
+   return result;
+
+Index: tools/shell.py
+==================================================================
+--- tools/shell.py
++++ tools/shell.py
+@@ -12,11 +12,11 @@
+ import base64
+ 
+ if sys.platform == "win32":
+     _win_colour = False
+     try:
+-        import colorama
++#        import colorama
+         colorama.init()
+         del colorama
+         _win_colour = True
+     except:  # there are several failure reasons, ignore them all
+         pass
+@@ -87,22 +87,25 @@
+         self._db = None
+         self.dbfilename = None
+         if db:
+             self.db = db, db.filename
+         else:
+-            self.db = None, None
+-        self.prompt = "sqlite> "
+-        self.moreprompt = "    ..> "
+-        self.separator = "|"
+-        self.bail = False
+-        self.echo = False
+-        self.timer = False
+-        self.header = False
+-        self.nullvalue = ""
+-        self.output = self.output_list
+-        self._output_table = self._fmt_sql_identifier("table")
+-        self.widths = []
++            self.db=None, None
++        self.prompt=    "sqlite> "
++        self.moreprompt="    ..> "
++        self.separator="|"
++        self.bail=False
++        self.echo=False
++        self.timer=False
++        self.header=False
++        self.nullvalue=""
++        if hasattr(apsw, 'rowhook'):
++            self.output=self.output_repr
++        else:
++            self.output=self.output_list
++        self._output_table=self._fmt_sql_identifier("table")
++        self.widths=[]
+         # do we truncate output in list mode?  (explain doesn't, regular does)
+         self.truncate = True
+         # a stack of previous outputs. turning on explain saves previous, off restores
+         self._output_stack = []
+ 
+@@ -684,10 +687,16 @@
+             fmt = lambda x: c.header + self._fmt_python(x) + c.header_
+         else:
+             fmt = lambda x: self.colour.colour_value(x, self._fmt_python(x))
+         self.write(self.stdout, '(' + ", ".join([fmt(l) for l in line]) + "),\n")
+ 
++    def output_repr(self, header, line):
++        "Tuples in Python repr form for each row"
++        if header:
++            return
++        self.write(self.stdout, repr(line)+"\n")
++
+     def output_tcl(self, header, line):
+         "Outputs TCL/C style strings using current separator"
+         # In theory you could paste the output into your source ...
+         if header:
+             if not self.header:
+@@ -866,10 +875,12 @@
+             if not internal and self.timer:
+                 state['timing'] = self.get_resource_usage()
+             return True
+ 
+         cur.setexectrace(et)
++        if hasattr(apsw, 'rowhook'):
++            apsw.rowhook(cur)
+         # processing loop
+         try:
+             for row in cur.execute(sql, bindings):
+                 if state['newsql']:
+                     # summary line?
+
+Index: tools/speedtest.py
+==================================================================
+--- tools/speedtest.py
++++ tools/speedtest.py
+@@ -42,20 +42,26 @@
+     write("     Iterations %d\n" % (options.iterations, ))
+     write("Statement Cache %d\n" % (options.scsize, ))
+ 
+     write("\n")
+     if options.apsw:
+-        import apsw
++        import oldapsw as apsw
+ 
+         write("    Testing with APSW file " + apsw.__file__ + "\n")
+         write("              APSW version " + apsw.apswversion() + "\n")
+         write("        SQLite lib version " + apsw.sqlitelibversion() + "\n")
+         write("    SQLite headers version " + str(apsw.SQLITE_VERSION_NUMBER) + "\n\n")
+ 
+         def apsw_setup(dbfile):
++            apsw.connection_hooks = []
+             con = apsw.Connection(dbfile, statementcachesize=options.scsize)
+             con.createscalarfunction("number_name", number_name, 1)
++            try:
++                con.scanbindings = False
++                con.outputrows = False
++            except:
++                pass
+             return con
+ 
+     if options.pysqlite:
+         try:
+             from pysqlite2 import dbapi2 as pysqlite
+
